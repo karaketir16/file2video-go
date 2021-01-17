@@ -1,3 +1,6 @@
-/outQR/
-/outVideo/
+/outQR/*
+/outVideo/*
 /.idea/
+
+!/outQR/
+!/outVideo/

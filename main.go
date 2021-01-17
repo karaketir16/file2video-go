@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/boombuler/barcode"
+	"github.com/boombuler/barcode/qr"
 	"github.com/liyue201/goqr"
+	"gocv.io/x/gocv"
 	"image"
-	"image/jpeg"
 	_ "image/jpeg"
 	_ "image/png"
 	"io/ioutil"
@@ -13,14 +15,16 @@ import (
 )
 
 import (
-	"github.com/boombuler/barcode"
-	"github.com/boombuler/barcode/qr"
-)
-import (
 	"bufio"
 	"encoding/base64"
 )
 import "github.com/icza/mjpeg"
+
+func checkErr(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
 
 func recognizeFile(path string) {
 	fmt.Printf("recognize file: %v\n", path)
@@ -45,15 +49,26 @@ func recognizeFile(path string) {
 	return
 }
 
+const COL = 1080
+const ROW = 1080
+
+var videowriter *gocv.VideoWriter
+
 func main() {
+	writer, err := gocv.VideoWriterFile("outVideo/opencvout.mp4", "H264", 24, COL, ROW, true)
+	checkErr(err)
+	videowriter = writer
+
 	chunks := encodeBase64("test/test.mp4")
 	tot := len(chunks)
-	for i, chunk := range chunks{
+	for i, chunk := range chunks {
 		encodeQr(chunk, fmt.Sprintf("outQR/%010d.jpg", i))
 		fmt.Printf("total: %d, now:%d\n\r", tot, i)
 	}
-	encodeVideo(tot)
+	//encodeVideo(tot)
+	videowriter.Close()
 }
+
 func encodeBase64(filename string) []string {
 	// Open file on disk.
 	f, _ := os.Open(filename)
@@ -64,39 +79,47 @@ func encodeBase64(filename string) []string {
 
 	// Encode as base64.
 	encoded := base64.StdEncoding.EncodeToString(content)
-	return  Chunks(encoded,1000)
+	return Chunks(encoded, 1000)
 }
+
 func encodeQr(data, filename string) {
 	// Create the barcode
-	qrCode, _ := qr.Encode(data, qr.M, qr.Auto)
-
+	qrCode, err := qr.Encode(data, qr.M, qr.Auto)
+	checkErr(err)
 	// Scale the barcode to 200x200 pixels
-	qrCode, _ = barcode.Scale(qrCode, 1080, 1080)
+	qrCode, err = barcode.Scale(qrCode, 1080, 1080)
+	checkErr(err)
 
 	// create the output file
-	fileJpeg, _ := os.Create(filename)
-	defer fileJpeg.Close()
+	//fileJpeg, err := os.Create(filename)
+	//checkErr(err)
+	//defer fileJpeg.Close()
+	//
+	//// encode the barcode as png
+	//
+	//err = jpeg.Encode(fileJpeg, qrCode,nil)
+	//checkErr(err)
 
-	// encode the barcode as png
+	img, err := gocv.ImageToMatRGB(qrCode)
+	checkErr(err)
+	if img.Empty() {
+		fmt.Printf("Error reading image from: %v\n", filename)
+		return
+	}
 
-	jpeg.Encode(fileJpeg, qrCode,nil)
+	videowriter.Write(img)
+
 	//recognizeFile(filename)
 }
 
-func encodeVideo(tot int){
-	checkErr := func(err error) {
-		if err != nil {
-			panic(err)
-		}
-	}
-
+func encodeVideo(tot int) {
 	// Video size: 1080x1080 pixels, FPS: 24
 	aw, err := mjpeg.New("outVideo/out.avi", 1080, 1080, 24)
 	checkErr(err)
 
 	// Create a movie from images: 1.jpg, 2.jpg, ..., 10.jpg
 	for i := 0; i < tot; i++ {
-		fmt.Printf("Converting video: %d\n\r", i)
+		fmt.Printf("Converting video: %d\n", i)
 		data, err := ioutil.ReadFile(fmt.Sprintf("outQR/%010d.jpg", i))
 		checkErr(err)
 		checkErr(aw.AddFrame(data))
