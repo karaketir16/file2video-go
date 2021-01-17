@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/boombuler/barcode"
@@ -11,7 +12,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
-	"io/ioutil"
+	"log"
 	"math"
 	//"log"
 	"os"
@@ -20,13 +21,45 @@ import (
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/json"
+	"flag"
+	"github.com/cheggaaa/pb/v3"
+	"golang.org/x/crypto/blake2b"
+	"path/filepath"
 )
-import "github.com/icza/mjpeg"
+
+type MetaData struct {
+	Filename         string
+	ChunkCount       int
+	Filehash         string
+	ConverterUrl     string
+	ConverterVersion string
+}
 
 func checkErr(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func hashFile(filename string) (hashstr string) {
+	hasher, _ := blake2b.New256(nil)
+
+	path := filename
+	f, err := os.Open(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer f.Close()
+
+	if _, err := io.Copy(hasher, f); err != nil {
+		log.Fatal(err)
+	}
+
+	hash := hasher.Sum(nil)
+	hashstr = hex.EncodeToString(hash[:])
+	return
 }
 
 func recognizeQR(img image.Image) (string, error) {
@@ -47,20 +80,43 @@ const HEIGHT = 1080
 
 func main() {
 
-	//converttoQR()
+	source := flag.String("src", "", "-src source.file")
+	destination := flag.String("dst", "", "-dst destination file for F2V, destination folder for V2F")
 
-	video, err := gocv.OpenVideoCapture("outVideo/opencvout.mp4")
+	convert := flag.Bool("F2V", false, "-F2V for convert file to video")
+	reconvert := flag.Bool("V2F", false, "-V2F for convert video to file")
+
+	flag.Parse()
+
+	if *convert == *reconvert || *source == "" || *destination == "" {
+		flag.Usage()
+		os.Exit(2)
+	}
+	if *convert {
+		convert2Video(*source, *destination)
+	} else if *reconvert {
+		convert2File(*source, *destination)
+	}
+}
+
+func convert2File(source, destination string) {
+	video, err := gocv.OpenVideoCapture(source)
 	checkErr(err)
 	defer video.Close()
 	img := gocv.NewMat()
 	defer img.Close()
-	i := 0
+
 	fmt.Printf("Start reading device: %v\n", video)
 
-	file, err := os.Create("test/outfile.jpg")
 	checkErr(err)
 
+	firstFrame := true
+	var metadata MetaData
+	var bar *pb.ProgressBar
+	var file *os.File
+
 	for {
+
 		if ok := video.Read(&img); !ok {
 			fmt.Printf("Device closed: %v\n", video)
 			return
@@ -75,31 +131,48 @@ func main() {
 		checkErr(err)
 		data, err := base64.StdEncoding.DecodeString(res)
 		checkErr(err)
-		_, err = file.Write(data)
-		checkErr(err)
-		i++
-		fmt.Println(i)
+
+		if firstFrame {
+			json.Unmarshal(data, &metadata)
+			firstFrame = false
+			file, err = os.Create(filepath.Join(destination, metadata.Filename))
+			checkErr(err)
+			bar = pb.StartNew(metadata.ChunkCount)
+		} else {
+			_, err = file.Write(data)
+			checkErr(err)
+			bar.Increment()
+		}
 	}
 
 	file.Close()
+
+	receivedHash := hashFile(filepath.Join(destination, metadata.Filename))
+	metadataHash := metadata.Filehash
+	if receivedHash != metadataHash {
+		checkErr(errors.New("expected: " + metadataHash + "\n received: " + receivedHash))
+	}
+	bar.Finish()
 }
 
-func converttoQR() {
-	videowriter, err := gocv.VideoWriterFile("outVideo/opencvout.mp4", "H264", 24, WIDTH, HEIGHT, true)
+func convert2Video(source, destination string) {
+	path := filepath.Dir(destination)
+	stat, err := os.Stat(path)
+	checkErr(err)
+	if !stat.IsDir() {
+		checkErr(errors.New("parent is not directory"))
+	}
+
+	videowriter, err := gocv.VideoWriterFile(destination, "H264", 24, WIDTH, HEIGHT, true)
 	checkErr(err)
 
-	outputLOG := make(chan string, 10000)
-	go func() {
-		for {
-			fmt.Print(<-outputLOG)
-		}
-	}()
+	fileChunks := make(chan []byte, 5)
 
-	fileChunks := make(chan []byte, 1000)
+	count := readCunks(source, 500, fileChunks)
 
-	count := readCunks("test/test.jpg", 500, fileChunks)
+	bar := pb.StartNew(count + 1)
 
-	base64Chunks := make(chan string, 1000)
+	base64Chunks := make(chan string, 5)
 	go func() {
 		defer close(base64Chunks)
 		for chunk := range fileChunks {
@@ -107,7 +180,7 @@ func converttoQR() {
 		}
 	}()
 
-	images := make(chan image.Image, 1000)
+	images := make(chan image.Image, 5)
 
 	go func() {
 		defer close(images)
@@ -118,20 +191,18 @@ func converttoQR() {
 
 	done := make(chan int)
 	go func() {
-		i := 0
 		for image := range images {
-			test, err := recognizeQR(image)
-			checkErr(err)
-			fmt.Println(test)
+			//test, err := recognizeQR(image)
+			//checkErr(err)
+			//fmt.Println(test)
 			img, err := gocv.ImageToMatRGB(image)
 			checkErr(err)
 			err = videowriter.Write(img)
 			checkErr(err)
-			fmt.Printf("written %d, tot: %d --- ", i, count)
-			fmt.Printf("fileChunks: %d, base64Chunks: %d, images %d\n", len(fileChunks), len(base64Chunks), len(images))
-			i++
+			bar.Increment()
 		}
 		videowriter.Close()
+		bar.Finish()
 		done <- 1
 	}()
 
@@ -154,46 +225,11 @@ func encodeQr(data string) image.Image {
 	return qrCode
 }
 
-func encodeVideo(tot int) {
-	// Video size: 1080x1080 pixels, FPS: 24
-	aw, err := mjpeg.New("outVideo/out.avi", 1080, 1080, 24)
-	checkErr(err)
-
-	// Create a movie from images: 1.jpg, 2.jpg, ..., 10.jpg
-	for i := 0; i < tot; i++ {
-		fmt.Printf("Converting video: %d\n", i)
-		data, err := ioutil.ReadFile(fmt.Sprintf("outQR/%010d.jpg", i))
-		checkErr(err)
-		checkErr(aw.AddFrame(data))
-	}
-
-	checkErr(aw.Close())
-}
-
-// https://stackoverflow.com/a/61469854/8328237
-//func Chunks(s string, chunkSize int) []string {
-//	if chunkSize >= len(s) {
-//		return []string{s}
-//	}
-//	var chunks []string
-//	chunk := make([]rune, chunkSize)
-//	len := 0
-//	for _, r := range s {
-//		chunk[len] = r
-//		len++
-//		if len == chunkSize {
-//			chunks = append(chunks, string(chunk))
-//			len = 0
-//		}
-//	}
-//	if len > 0 {
-//		chunks = append(chunks, string(chunk[:len]))
-//	}
-//	return chunks
-//}
-
 //https://zetcode.com/golang/readfile/
 func readCunks(filename string, chunkSize int, chunkChan chan []byte) (count int) {
+
+	hash := hashFile(filename)
+
 	f, err := os.Open(filename)
 	checkErr(err)
 
@@ -205,6 +241,19 @@ func readCunks(filename string, chunkSize int, chunkChan chan []byte) (count int
 	d := float64(filesize) / float64(chunkSize)
 
 	count = int(math.Ceil(d))
+
+	m := MetaData{
+		Filename:         filepath.Base(filename),
+		ChunkCount:       count,
+		Filehash:         hash,
+		ConverterUrl:     "https://github.com/karaketir16/go-File2Video",
+		ConverterVersion: "V0.1",
+	}
+
+	metadata, err := json.Marshal(m)
+	checkErr(err)
+
+	chunkChan <- metadata
 
 	go func() {
 
