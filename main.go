@@ -4,28 +4,28 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/boombuler/barcode"
-	"github.com/boombuler/barcode/qr"
-	"github.com/liyue201/goqr"
-	"gocv.io/x/gocv"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
 	"log"
 	"math"
-	//"log"
-	"os"
-)
 
-import (
+	"github.com/boombuler/barcode"
+	"github.com/boombuler/barcode/qr"
+	"github.com/liyue201/goqr"
+	"gocv.io/x/gocv"
+
+	//"log"
 	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
+	"os"
+	"path/filepath"
+
 	"github.com/cheggaaa/pb/v3"
 	"golang.org/x/crypto/blake2b"
-	"path/filepath"
 )
 
 type MetaData struct {
@@ -225,7 +225,7 @@ func encodeQr(data string) image.Image {
 	return qrCode
 }
 
-//https://zetcode.com/golang/readfile/
+// https://zetcode.com/golang/readfile/
 func readCunks(filename string, chunkSize int, chunkChan chan []byte) (count int) {
 
 	hash := hashFile(filename)
